@@ -33,7 +33,7 @@ int start_worker(Worker *w, const char *worker_path, const sigset_t *child_mask)
  * @param worker_path Path to the worker executable for restarts.
  * @param child_mask Signal mask to apply to restarted children.
  * @param shutting_down Non-zero if watchdog is currently shutting down.
- * @return int 0 on success, 1 on child startup failure, -1 on system call error.
+ * @return int 0 on success, -1 on startup or system call error.
  */
 int reap_workers(Worker *workers, size_t count, const char *worker_path, const sigset_t *child_mask, int shutting_down);
 
