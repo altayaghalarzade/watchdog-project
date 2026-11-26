@@ -37,4 +37,9 @@ int start_worker(Worker *w, const char *worker_path, const sigset_t *child_mask)
  */
 int reap_workers(Worker *workers, size_t count, const char *worker_path, const sigset_t *child_mask, int shutting_down);
 
+/* Periodic worker monitoring */
+size_t active_workers(const Worker *workers, size_t count);
+void start_periodic_check(void);
+void periodic_check(const Worker *workers, size_t count);
+
 #endif /* PROCESS_MANAGER_H */

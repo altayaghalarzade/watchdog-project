@@ -181,3 +181,32 @@ int reap_workers(Worker *workers, size_t count, const char *worker_path, const s
 
     return result;
 }
+
+
+/* Worker monitoring interval in seconds */
+enum { CHECK_SECONDS = 2 };
+
+size_t active_workers(const Worker *workers, size_t count)
+{
+    size_t active = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        if (workers[i].pid > 0)
+            ++active;
+    }
+
+    return active;
+}
+
+void start_periodic_check(void)
+{
+    alarm(CHECK_SECONDS);
+}
+
+void periodic_check(const Worker *workers, size_t count)
+{
+    log_event("CHECK active=%zu",
+              active_workers(workers, count));
+
+    start_periodic_check();
+}
