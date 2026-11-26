@@ -7,15 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { CHECK_SECONDS = 2, SHUTDOWN_SECONDS = 3 };
-
-static size_t active_workers(const Worker *workers, size_t count)
-{
-    size_t active = 0;
-    for (size_t i = 0; i < count; ++i)
-        active += workers[i].pid > 0;
-    return active;
-}
+enum { SHUTDOWN_SECONDS = 3 };
 
 static void signal_workers(const Worker *workers, size_t count, int sig)
 {
@@ -62,7 +54,7 @@ int main(int argc, char **argv)
             break;
         }
     }
-    alarm(CHECK_SECONDS);
+    start_periodic_check();
     for (;;) {
         if (!stopping && (failed || shutdown_requested())) {
             stopping = 1;
@@ -105,8 +97,7 @@ int main(int argc, char **argv)
         if (timer_event) {
             timer_event = 0;
             if (!stopping) {
-                log_event("CHECK active=%zu", active_workers(workers, count));
-                alarm(CHECK_SECONDS);
+                periodic_check(workers, count);
             } else if (!forced) {
                 forced = 1;
                 log_event("SHUTDOWN escalate signal=SIGKILL");
