@@ -11,66 +11,152 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <errno.h>
+#include <fcntl.h>
 
-int start_worker(Worker *w, const char *worker_path, const sigset_t *child_mask) {
+
+/* Report a child setup or exec failure to the parent. */
+static void child_start_failed(int fd)
+{
+    int error = errno;
+
+    while (write(fd, &error, sizeof error) == -1
+           && errno == EINTR) {
+    }
+
+    _exit(127);
+}
+
+int start_worker(Worker *w, const char *worker_path,
+                 const sigset_t *child_mask)
+{
     if (w == NULL || worker_path == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (w->pid > 0) {
+        errno = EBUSY;
+        return -1;
+    }
+
+    int error_pipe[2];
+
+    if (pipe(error_pipe) == -1)
+        return -1;
+
+    /* Successful exec automatically closes the write end. */
+    if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
+        int saved = errno;
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        errno = saved;
         return -1;
     }
 
     pid_t pid = fork();
+
     if (pid < 0) {
-        perror("fork");
+        int saved = errno;
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        errno = saved;
         return -1;
     }
 
     if (pid == 0) {
-        /* Child process */
+        close(error_pipe[0]);
 
-        /* Reset inherited signal handlers to default before unmasking signals */
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
+        struct sigaction sa = {0};
         sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = 0;
 
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGTERM, &sa, NULL);
-        sigaction(SIGCHLD, &sa, NULL);
-        sigaction(SIGUSR1, &sa, NULL);
-        sigaction(SIGUSR2, &sa, NULL);
-        sigaction(SIGALRM, &sa, NULL);
-        sigaction(SIGHUP, &sa, NULL);
-        sigaction(SIGQUIT, &sa, NULL);
-        sigaction(SIGPIPE, &sa, NULL);
+        if (sigemptyset(&sa.sa_mask) == -1)
+            child_start_failed(error_pipe[1]);
 
-        /* Apply child_mask to unmask signals */
-        if (child_mask != NULL) {
-            if (sigprocmask(SIG_SETMASK, child_mask, NULL) < 0) {
-                _exit(127);
-            }
-        } else {
-            sigset_t empty;
-            sigemptyset(&empty);
-            if (sigprocmask(SIG_SETMASK, &empty, NULL) < 0) {
-                _exit(127);
-            }
+        const int signals[] = {
+            SIGINT, SIGTERM, SIGCHLD,
+            SIGUSR1, SIGUSR2, SIGALRM,
+            SIGHUP, SIGQUIT, SIGPIPE
+        };
+
+        for (size_t i = 0;
+             i < sizeof signals / sizeof signals[0]; ++i) {
+            if (sigaction(signals[i], &sa, NULL) == -1)
+                child_start_failed(error_pipe[1]);
         }
 
-        /* Execute worker executable with MODE argument */
-        const char *arg0 = worker_path;
+        sigset_t empty;
+
+        if (child_mask == NULL) {
+            if (sigemptyset(&empty) == -1)
+                child_start_failed(error_pipe[1]);
+
+            child_mask = &empty;
+        }
+
+        if (sigprocmask(SIG_SETMASK, child_mask, NULL) == -1)
+            child_start_failed(error_pipe[1]);
+
         if (w->mode && w->mode[0] != '\0') {
-            execl(worker_path, arg0, w->mode, (char *)NULL);
+            execl(worker_path, worker_path,
+                  w->mode, (char *)NULL);
         } else {
-            execl(worker_path, arg0, (char *)NULL);
+            execl(worker_path, worker_path, (char *)NULL);
         }
 
-        /* On exec error, exit immediately with _exit without flushing stdio */
-        _exit(127);
+        child_start_failed(error_pipe[1]);
     }
 
-    /* Parent process */
+    close(error_pipe[1]);
+
+    int child_error = 0;
+    int read_error = 0;
+    size_t received = 0;
+
+    while (received < sizeof child_error) {
+        ssize_t n = read(
+            error_pipe[0],
+            (char *)&child_error + received,
+            sizeof child_error - received
+        );
+
+        if (n > 0) {
+            received += (size_t)n;
+        } else if (n == 0) {
+            break;
+        } else if (errno != EINTR) {
+            read_error = errno;
+            break;
+        }
+    }
+
+    close(error_pipe[0]);
+
+    if (read_error || received != 0) {
+        int saved = read_error ? read_error :
+            (received == sizeof child_error && child_error
+             ? child_error : EIO);
+
+        if (read_error || received != sizeof child_error)
+            kill(pid, SIGKILL);
+
+        while (waitpid(pid, NULL, 0) == -1
+               && errno == EINTR) {
+        }
+
+        log_event("ERROR worker=%s could not start errno=%d",
+                  w->name ? w->name : "unknown", saved);
+
+        errno = saved;
+        return -1;
+    }
+
     w->pid = pid;
-    log_event("START pid=%d worker=%s mode=%s", (int)w->pid, w->name ? w->name : "unknown", w->mode ? w->mode : "default");
+
+    log_event("START pid=%d worker=%s mode=%s",
+              (int)w->pid,
+              w->name ? w->name : "unknown",
+              w->mode ? w->mode : "default");
+
     return 0;
 }
 
@@ -79,7 +165,7 @@ int reap_workers(Worker *workers, size_t count, const char *worker_path, const s
         return -1;
     }
 
-    int result = 0;
+    int restart_error = 0;
 
     while (1) {
         int status = 0;
@@ -139,14 +225,6 @@ int reap_workers(Worker *workers, size_t count, const char *worker_path, const s
         /* Mark worker process as dead */
         w->pid = 0;
 
-        /* The child reserves 127 for failures before executing the worker. */
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-            log_event("ERROR worker=%s could not start", wname);
-            if (result == 0)
-                result = 1;
-            continue;
-        }
-
         /* Check shutdown condition and pending SIGTERM / SIGINT */
         int is_shutting_down = shutting_down;
         sigset_t pending;
@@ -167,19 +245,22 @@ int reap_workers(Worker *workers, size_t count, const char *worker_path, const s
             w->restarts++;
             log_event("RESTART pid=%d worker=%s attempt=%u", (int)pid, wname, w->restarts);
 
-            if (worker_path != NULL) {
-                if (start_worker(w, worker_path, child_mask) < 0) {
-                    result = -1;
-                }
-            } else {
-                result = -1;
+            if (start_worker(w, worker_path, child_mask) < 0) {
+                restart_error = errno;
+                log_event("ERROR restart worker=%s errno=%d",
+                          wname, restart_error);
             }
         } else {
             log_event("LIMIT pid=%d worker=%s restarts=%u", (int)pid, wname, w->restarts);
         }
     }
 
-    return result;
+    if (restart_error != 0) {
+        errno = restart_error;
+        return -1;
+    }
+
+    return 0;
 }
 
 
