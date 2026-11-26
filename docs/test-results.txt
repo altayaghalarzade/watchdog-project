@@ -1,0 +1,8 @@
+sh tests/test_scenarios.sh
+PASS two workers, periodic check, SIGUSR1, graceful SIGTERM
+PASS natural exit without restart
+PASS verified worker SIGKILL and restart
+PASS restart limit of three
+PASS timeout, SIGKILL escalation and reap
+PASS terminal Ctrl+C
+PASS timestamps and sample log

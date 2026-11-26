@@ -1,0 +1,10 @@
+[2026-11-25 00:35:40] WATCHDOG pid=25
+[2026-11-25 00:35:40] START pid=26 worker=alpha mode=idle
+[2026-11-25 00:35:40] START pid=27 worker=beta mode=idle
+[2026-11-25 00:35:42] CHECK active=2
+[2026-11-25 00:35:42] STATUS worker=alpha pid=26 state=running restarts=0
+[2026-11-25 00:35:42] STATUS worker=beta pid=27 state=running restarts=0
+[2026-11-25 00:35:42] SHUTDOWN begin timeout=3
+[2026-11-25 00:35:42] EXIT pid=26 worker=alpha signal=15
+[2026-11-25 00:35:42] EXIT pid=27 worker=beta signal=15
+[2026-11-25 00:35:42] SHUTDOWN complete result=normal
